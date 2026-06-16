@@ -1,5 +1,8 @@
+import io
 import uuid
+
 import PyPDF2
+
 from .database import get_collection
 from .embedder import embed
 
@@ -19,7 +22,7 @@ def chunk_text(text: str) -> list[str]:
 
 
 def ingest_pdf(file_bytes: bytes, filename: str) -> int:
-    reader = PyPDF2.PdfReader(__import__("io").BytesIO(file_bytes))
+    reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
     full_text = " ".join(
         page.extract_text() or "" for page in reader.pages
     )
@@ -31,11 +34,14 @@ def ingest_text(text: str, source: str) -> int:
     if not chunks:
         return 0
 
+    collection = get_collection()
+    # Re-indexing the same source replaces it instead of duplicating chunks.
+    collection.delete(where={"source": source})
+
     embeddings = embed(chunks)
     ids = [str(uuid.uuid4()) for _ in chunks]
     metadatas = [{"source": source, "chunk": i} for i in range(len(chunks))]
 
-    collection = get_collection()
     collection.add(documents=chunks, embeddings=embeddings, ids=ids, metadatas=metadatas)
     return len(chunks)
 
@@ -45,3 +51,13 @@ def list_sources() -> list[str]:
     result = collection.get(include=["metadatas"])
     sources = {m["source"] for m in result["metadatas"]}
     return sorted(sources)
+
+
+def delete_source(source: str) -> int:
+    """Remove all chunks belonging to a document. Returns how many were removed."""
+    collection = get_collection()
+    existing = collection.get(where={"source": source})
+    count = len(existing["ids"])
+    if count:
+        collection.delete(where={"source": source})
+    return count

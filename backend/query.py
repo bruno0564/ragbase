@@ -1,5 +1,6 @@
 from .database import get_collection
 from .embedder import embed
+from .llm import generate_answer
 
 TOP_K = 5
 
@@ -8,7 +9,7 @@ def query(question: str) -> dict:
     collection = get_collection()
 
     if collection.count() == 0:
-        return {"answer": None, "sources": [], "context": []}
+        return {"question": question, "answer": None, "context": []}
 
     q_embedding = embed([question])[0]
     results = collection.query(
@@ -30,10 +31,10 @@ def query(question: str) -> dict:
             "score": round(1 - dist, 4),
         })
 
-    context_text = "\n\n---\n\n".join(b["text"] for b in context_blocks)
+    answer = generate_answer(question, context_blocks)
 
     return {
         "question": question,
+        "answer": answer,
         "context": context_blocks,
-        "raw_context": context_text,
     }

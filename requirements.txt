@@ -4,3 +4,4 @@ chromadb
 sentence-transformers
 pypdf2
 python-multipart
+httpx
