@@ -1,34 +1,88 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+
+import { streamQuery } from './stream'
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
+// Paleta mínima reutilizada en los estilos inline.
+const INDIGO = '#818cf8'
+
 export default function App() {
-  const [question, setQuestion] = useState('')
-  const [result, setResult] = useState(null)
-  const [loading, setLoading] = useState(false)
-  const [uploading, setUploading] = useState(false)
-  const [sources, setSources] = useState([])
-  const [tab, setTab] = useState('query')
+  const [tab, setTab] = useState('chat')
+  // Cada mensaje: { role: 'user' | 'assistant', content, context?, streamed? }
+  const [messages, setMessages] = useState([])
+  const [input, setInput] = useState('')
+  const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
 
-  async function handleQuery(e) {
+  const [sources, setSources] = useState([])
+  const [uploading, setUploading] = useState(false)
+
+  const bottomRef = useRef(null)
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
+
+  async function handleSend(e) {
     e.preventDefault()
-    if (!question.trim()) return
-    setLoading(true)
-    setResult(null)
+    const question = input.trim()
+    if (!question || busy) return
+
+    // Historial = turnos previos con contenido (memoria conversacional).
+    const history = messages
+      .filter((m) => m.content)
+      .map((m) => ({ role: m.role, content: m.content }))
+
+    setInput('')
     setError(null)
-    try {
-      const r = await fetch(`${API}/query`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question }),
+    setBusy(true)
+    // Añadimos el turno del usuario y un hueco para la respuesta del asistente.
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', content: question },
+      { role: 'assistant', content: '', context: [], streamed: false },
+    ])
+
+    const update = (patch) =>
+      setMessages((prev) => {
+        const next = [...prev]
+        const last = next.length - 1
+        next[last] = typeof patch === 'function' ? patch(next[last]) : { ...next[last], ...patch }
+        return next
       })
-      if (!r.ok) throw new Error(`Server error (${r.status})`)
-      setResult(await r.json())
+
+    try {
+      await streamQuery(
+        API,
+        { question, history },
+        {
+          onContext: (context) => update({ context: context || [] }),
+          onToken: (text) => update((m) => ({ ...m, content: m.content + text, streamed: true })),
+          onDone: (payload) => update({ streamed: Boolean(payload.answer) }),
+        },
+      )
     } catch (err) {
       setError(err.message || 'Could not reach the server')
+      // Quitamos el hueco vacío del asistente si falló del todo.
+      setMessages((prev) => {
+        const last = prev[prev.length - 1]
+        if (last?.role === 'assistant' && !last.content) return prev.slice(0, -1)
+        return prev
+      })
     } finally {
-      setLoading(false)
+      setBusy(false)
+    }
+  }
+
+  async function loadSources() {
+    try {
+      const r = await fetch(`${API}/sources`)
+      if (!r.ok) throw new Error(`Could not load documents (${r.status})`)
+      setSources((await r.json()).sources)
+    } catch (err) {
+      setError(err.message || 'Could not load documents')
     }
   }
 
@@ -52,17 +106,6 @@ export default function App() {
     }
   }
 
-  async function loadSources() {
-    try {
-      const r = await fetch(`${API}/sources`)
-      if (!r.ok) throw new Error(`Could not load documents (${r.status})`)
-      const data = await r.json()
-      setSources(data.sources)
-    } catch (err) {
-      setError(err.message || 'Could not load documents')
-    }
-  }
-
   async function handleDelete(source) {
     if (!confirm(`Remove "${source}" from the index?`)) return
     setError(null)
@@ -76,83 +119,74 @@ export default function App() {
   }
 
   return (
-    <div style={{ maxWidth: 720, margin: '0 auto', padding: '2rem 1rem', fontFamily: 'system-ui, sans-serif' }}>
-      <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '1.5rem' }}>ragbase</h1>
+    <div style={S.page}>
+      <div style={S.header}>
+        <h1 style={S.title}>ragbase</h1>
+        {tab === 'chat' && messages.length > 0 && (
+          <button onClick={() => setMessages([])} style={S.ghostBtn} disabled={busy}>
+            New chat
+          </button>
+        )}
+      </div>
 
-      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem' }}>
-        {['query', 'upload'].map(t => (
-          <button key={t} onClick={() => { setTab(t); setError(null); if (t === 'upload') loadSources() }}
-            style={{ padding: '0.4rem 1rem', background: tab === t ? '#818cf8' : '#eee', color: tab === t ? '#fff' : '#333', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>
-            {t === 'query' ? 'Ask' : 'Upload PDF'}
+      <div style={S.tabs}>
+        {['chat', 'upload'].map((t) => (
+          <button
+            key={t}
+            onClick={() => {
+              setTab(t)
+              setError(null)
+              if (t === 'upload') loadSources()
+            }}
+            style={tab === t ? S.tabActive : S.tab}
+          >
+            {t === 'chat' ? 'Chat' : 'Upload PDF'}
           </button>
         ))}
       </div>
 
-      {error && (
-        <div style={{ background: '#fee2e2', border: '1px solid #fca5a5', color: '#991b1b', borderRadius: 6, padding: '0.6rem 0.85rem', marginBottom: '1.25rem', fontSize: '0.85rem' }}>
-          {error}
-        </div>
-      )}
+      {error && <div style={S.error}>{error}</div>}
 
-      {tab === 'query' && (
+      {tab === 'chat' && (
         <>
-          <form onSubmit={handleQuery} style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem' }}>
+          <div style={S.thread}>
+            {messages.length === 0 && (
+              <p style={S.hint}>Ask something about your documents. Upload a PDF first if empty.</p>
+            )}
+            {messages.map((m, i) => (
+              <ChatMessage key={i} message={m} streaming={busy && i === messages.length - 1} />
+            ))}
+            <div ref={bottomRef} />
+          </div>
+
+          <form onSubmit={handleSend} style={S.inputRow}>
             <input
-              value={question}
-              onChange={e => setQuestion(e.target.value)}
-              placeholder="Ask something about your documents..."
-              style={{ flex: 1, padding: '0.6rem 0.75rem', border: '1px solid #ddd', borderRadius: 6, fontSize: '0.9rem' }}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Ask a question..."
+              style={S.input}
+              disabled={busy}
             />
-            <button type="submit" disabled={loading}
-              style={{ padding: '0.6rem 1.2rem', background: '#818cf8', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>
-              {loading ? '...' : 'Ask'}
+            <button type="submit" disabled={busy} style={S.sendBtn}>
+              {busy ? '...' : 'Send'}
             </button>
           </form>
-
-          {result && result.context?.length === 0 && (
-            <p style={{ color: '#888', fontSize: '0.9rem' }}>No documents indexed yet — upload a PDF first.</p>
-          )}
-
-          {result && result.answer && (
-            <div style={{ background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1.5rem' }}>
-              <p style={{ fontSize: '0.75rem', color: '#6366f1', fontWeight: 700, letterSpacing: '0.05em', marginBottom: '0.5rem' }}>ANSWER</p>
-              <p style={{ fontSize: '0.95rem', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>{result.answer}</p>
-            </div>
-          )}
-
-          {result && result.context?.length > 0 && (
-            <div>
-              <p style={{ fontWeight: 600, marginBottom: '1rem' }}>
-                {result.answer ? 'Sources' : 'Relevant passages'}
-                {!result.answer && <span style={{ fontWeight: 400, color: '#888', fontSize: '0.8rem' }}> (start Ollama for generated answers)</span>}
-              </p>
-              {result.context.map((c, i) => (
-                <div key={i} style={{ background: '#f8f8f8', border: '1px solid #eee', borderRadius: 8, padding: '1rem', marginBottom: '0.75rem' }}>
-                  <p style={{ fontSize: '0.75rem', color: '#888', marginBottom: '0.4rem' }}>
-                    {c.source} · chunk {c.chunk} · score {c.score}
-                  </p>
-                  <p style={{ fontSize: '0.875rem', lineHeight: 1.6 }}>{c.text}</p>
-                </div>
-              ))}
-            </div>
-          )}
         </>
       )}
 
       {tab === 'upload' && (
         <div>
-          <label style={{ display: 'inline-block', padding: '0.6rem 1.2rem', background: '#818cf8', color: '#fff', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>
+          <label style={S.uploadBtn}>
             {uploading ? 'Uploading...' : 'Choose PDF'}
-            <input type="file" accept=".pdf" onChange={handleUpload} style={{ display: 'none' }} disabled={uploading} />
+            <input type="file" accept=".pdf" onChange={handleUpload} hidden disabled={uploading} />
           </label>
           {sources.length > 0 && (
             <div style={{ marginTop: '1.5rem' }}>
               <p style={{ fontWeight: 600, marginBottom: '0.5rem' }}>Indexed documents:</p>
-              {sources.map(s => (
-                <div key={s} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.875rem', color: '#555', padding: '0.3rem 0' }}>
+              {sources.map((s) => (
+                <div key={s} style={S.sourceRow}>
                   <span>• {s}</span>
-                  <button onClick={() => handleDelete(s)}
-                    style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600 }}>
+                  <button onClick={() => handleDelete(s)} style={S.removeBtn}>
                     Remove
                   </button>
                 </div>
@@ -163,4 +197,79 @@ export default function App() {
       )}
     </div>
   )
+}
+
+function ChatMessage({ message, streaming }) {
+  const isUser = message.role === 'user'
+  if (isUser) {
+    return (
+      <div style={{ ...S.bubbleRow, justifyContent: 'flex-end' }}>
+        <div style={S.userBubble}>{message.content}</div>
+      </div>
+    )
+  }
+
+  const hasAnswer = message.content.length > 0
+  const passages = message.context || []
+  return (
+    <div style={{ ...S.bubbleRow, justifyContent: 'flex-start' }}>
+      <div style={S.assistantBubble}>
+        {hasAnswer ? (
+          <div style={S.markdown}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+            {streaming && <span style={S.caret}>▍</span>}
+          </div>
+        ) : streaming ? (
+          <span style={{ color: '#888' }}>Thinking…</span>
+        ) : (
+          <p style={{ color: '#888', margin: 0, fontSize: '0.85rem' }}>
+            {passages.length
+              ? 'No generated answer (start Ollama for that). Relevant passages:'
+              : 'No documents indexed yet — upload a PDF first.'}
+          </p>
+        )}
+
+        {passages.length > 0 && (
+          <div style={{ marginTop: hasAnswer ? '0.75rem' : '0.5rem' }}>
+            {hasAnswer && <p style={S.sourcesLabel}>Sources</p>}
+            {passages.map((c, i) => (
+              <div key={i} style={S.passage}>
+                <p style={S.passageMeta}>
+                  {c.source} · chunk {c.chunk} · score {c.score}
+                </p>
+                <p style={{ margin: 0, fontSize: '0.85rem', lineHeight: 1.5 }}>{c.text}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+const S = {
+  page: { maxWidth: 760, margin: '0 auto', padding: '2rem 1rem', fontFamily: 'system-ui, sans-serif' },
+  header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
+  title: { fontSize: '1.5rem', fontWeight: 700, margin: 0 },
+  ghostBtn: { background: 'none', border: '1px solid #ddd', borderRadius: 6, padding: '0.3rem 0.7rem', cursor: 'pointer', fontSize: '0.8rem', color: '#555' },
+  tabs: { display: 'flex', gap: '0.5rem', margin: '1.25rem 0' },
+  tab: { padding: '0.4rem 1rem', background: '#eee', color: '#333', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 },
+  tabActive: { padding: '0.4rem 1rem', background: INDIGO, color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 },
+  error: { background: '#fee2e2', border: '1px solid #fca5a5', color: '#991b1b', borderRadius: 6, padding: '0.6rem 0.85rem', marginBottom: '1rem', fontSize: '0.85rem' },
+  thread: { display: 'flex', flexDirection: 'column', gap: '0.75rem', minHeight: 280, maxHeight: '60vh', overflowY: 'auto', padding: '0.5rem 0' },
+  hint: { color: '#888', fontSize: '0.9rem' },
+  bubbleRow: { display: 'flex' },
+  userBubble: { background: INDIGO, color: '#fff', padding: '0.55rem 0.85rem', borderRadius: '14px 14px 2px 14px', maxWidth: '80%', fontSize: '0.9rem', lineHeight: 1.5, whiteSpace: 'pre-wrap' },
+  assistantBubble: { background: '#f4f4f6', color: '#1f2330', padding: '0.7rem 0.95rem', borderRadius: '14px 14px 14px 2px', maxWidth: '88%', fontSize: '0.92rem' },
+  markdown: { lineHeight: 1.6 },
+  caret: { color: INDIGO, marginLeft: 2 },
+  sourcesLabel: { fontSize: '0.7rem', color: '#6366f1', fontWeight: 700, letterSpacing: '0.05em', margin: '0 0 0.4rem' },
+  passage: { background: '#fff', border: '1px solid #e7e7ec', borderRadius: 8, padding: '0.6rem 0.75rem', marginBottom: '0.5rem' },
+  passageMeta: { fontSize: '0.72rem', color: '#999', margin: '0 0 0.3rem' },
+  inputRow: { display: 'flex', gap: '0.5rem', marginTop: '1rem' },
+  input: { flex: 1, padding: '0.65rem 0.8rem', border: '1px solid #ddd', borderRadius: 8, fontSize: '0.9rem' },
+  sendBtn: { padding: '0.65rem 1.3rem', background: INDIGO, color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600 },
+  uploadBtn: { display: 'inline-block', padding: '0.6rem 1.2rem', background: INDIGO, color: '#fff', borderRadius: 6, cursor: 'pointer', fontWeight: 600 },
+  sourceRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.875rem', color: '#555', padding: '0.3rem 0' },
+  removeBtn: { background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600 },
 }
