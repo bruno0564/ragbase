@@ -1,0 +1,47 @@
+# Levanta todo el stack de ragbase con un solo comando:
+#
+#   docker compose up --build
+#
+# La primera vez, descarga el modelo del LLM dentro del contenedor de Ollama:
+#
+#   docker compose exec ollama ollama pull llama3.2
+#
+# Luego abre el frontend en http://localhost:5173
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: llama3.2
+      CHROMA_PATH: /data/chroma_db
+    volumes:
+      - chroma:/data
+    depends_on:
+      - ollama
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_URL: http://localhost:8000
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  ollama:
+  chroma:

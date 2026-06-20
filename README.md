@@ -6,7 +6,7 @@ RAG (Retrieval-Augmented Generation) system that lets you query your own documen
 
 1. **Ingest** — documents are split into overlapping chunks, embedded with a local sentence-transformer model, and stored in ChromaDB (a vector database)
 2. **Retrieve** — the question is embedded with the same model, then the closest chunks are retrieved by cosine similarity
-3. **Generate** — the retrieved passages are handed to a local LLM (via [Ollama](https://ollama.com)) which writes an answer grounded in that context, with source attribution and similarity scores
+3. **Generate** — the retrieved passages are handed to a local LLM (via [Ollama](https://ollama.com)) which writes an answer grounded in that context, with source attribution and similarity scores. Answers **stream** into a chat UI token-by-token (Server-Sent Events), rendered as Markdown, and the conversation keeps **memory** across turns
 
 No OpenAI API key required — both the embedding model (`all-MiniLM-L6-v2`) and the answer-generating LLM run locally.
 
@@ -16,9 +16,21 @@ No OpenAI API key required — both the embedding model (`all-MiniLM-L6-v2`) and
 
 - **Backend** — Python · FastAPI · ChromaDB · sentence-transformers · PyPDF2
 - **LLM** — Ollama (local, optional)
-- **Frontend** — React · Vite
+- **Frontend** — React · Vite · react-markdown
+- **Ops** — Docker Compose · pytest · GitHub Actions
 
-## Install & run
+## Run with Docker (everything at once)
+
+```bash
+docker compose up --build
+docker compose exec ollama ollama pull llama3.2   # first time only
+# → frontend at http://localhost:5173
+```
+
+Brings up the backend, the React frontend (built and served by nginx) and a
+local Ollama, wired together. ChromaDB and the Ollama models persist in volumes.
+
+## Install & run (local)
 
 ```bash
 # Backend
@@ -38,6 +50,13 @@ ollama serve
 ollama pull llama3.2
 ```
 
+### Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest          # backend suite — mocks ChromaDB and the embedder, no torch needed
+```
+
 ### Configuration
 
 | Variable | Default | Description |
@@ -54,22 +73,26 @@ ollama pull llama3.2
 | `POST` | `/ingest/text` | Index raw text with a source label |
 | `GET` | `/sources` | List all indexed document names |
 | `DELETE` | `/sources/{source}` | Remove a document from the index |
-| `POST` | `/query` | Ask a question, get a generated answer + supporting passages |
+| `POST` | `/query` | Ask a question (optionally with `history`), get an answer + passages |
+| `POST` | `/query/stream` | Same, streamed token-by-token over Server-Sent Events |
 
 ## Project structure
 
 ```
 ragbase/
 ├── backend/
-│   ├── main.py        — FastAPI app, endpoints
+│   ├── main.py        — FastAPI app, endpoints (incl. SSE streaming)
 │   ├── ingest.py      — PDF parsing, chunking, embedding, indexing
-│   ├── query.py       — semantic search against ChromaDB
-│   ├── llm.py         — answer generation via local Ollama
-│   ├── embedder.py    — sentence-transformers wrapper
+│   ├── query.py       — retrieval (semantic search) against ChromaDB
+│   ├── llm.py         — answer generation/streaming via local Ollama chat API
+│   ├── embedder.py    — sentence-transformers wrapper (lazy-loaded)
 │   └── database.py    — ChromaDB client singleton
 ├── frontend/
 │   └── src/
-│       └── App.jsx    — upload + query UI
+│       ├── App.jsx    — chat UI (streaming, Markdown, memory) + upload
+│       └── stream.js  — fetch-based Server-Sent Events client
+├── tests/             — pytest suite (mocked ChromaDB/embedder)
+├── docker-compose.yml — backend + frontend + Ollama
 └── requirements.txt
 ```
 
@@ -77,6 +100,10 @@ ragbase/
 
 - [x] LLM integration (Ollama local) to generate actual answers from context
 - [x] Delete documents from the index
+- [x] Streaming responses (Server-Sent Events)
+- [x] Markdown rendering for answers
+- [x] Conversation memory (multi-turn chat)
+- [x] Backend test suite + CI
+- [x] One-command Docker setup (backend + frontend + Ollama)
 - [ ] Multi-collection support (separate namespaces per topic)
-- [ ] Streaming responses
-- [ ] Markdown rendering for answers
+- [ ] Migrate PyPDF2 → pypdf (PyPDF2 is deprecated)
