@@ -1,0 +1,8 @@
+# Dependencias para ejecutar los tests. Es un subconjunto ligero a propósito:
+# los tests mockean ChromaDB y el modelo de embeddings (imports perezosos), así
+# que no hace falta instalar chromadb ni sentence-transformers (ni PyTorch).
+fastapi
+httpx
+python-multipart
+pypdf2
+pytest
